@@ -1,0 +1,430 @@
+---
+title: "Applied Data Science:  Midterm Project"
+author: ""
+date: ""
+output:
+  prettydoc::html_pretty:
+  theme: cayman
+highlight: github
+---
+
+```{r setup, include=FALSE}
+set.seed(72)
+knitr::opts_chunk$set(echo = TRUE, comment="", warning = FALSE, message = FALSE, tidy.opts=list(width.cutoff=55))
+```
+
+```{r libraries, echo = FALSE}
+library(data.table)
+library(DT)
+library(R.filesets)
+```
+
+```{r source_files}
+train.set = "~/Applied Data Science/Midterm Proj/Data/MNIST-fashion training set-49.csv"
+test.set = "~/Applied Data Science/Midterm Proj/Data/MNIST-fashion testing set-49.csv"
+```
+
+```{r functions}
+sampling = function(x,value){
+  x[sample(x = 1:x[,.N], size = value, replace = FALSE),]
+}
+
+round.numerics <- function(x, digits){
+  if(is.numeric(x)){
+    x <- round(x = x, digits = digits)
+  }
+  return(x)
+}
+
+numeric_to_numeric <- function(x,digits){
+  if(is.na(as.numeric(x))){
+    x <- x
+  } else {x <- round.numerics(as.numeric(x),digits = digits)}
+  return(x)
+}
+
+scoring.model <- function(model, size, running.time, data.name, pred){
+    A <- nrow(get(data.name)) / nrow(train)
+    B <- min(running.time / 60 , 1)
+    C <- mean(pred != test$label)
+    
+    score <- 0.25 * A + 0.25 * B + 0.5 * C
+    
+    result <- data.frame(Model = model,
+                        `Sample Size` = size,
+                        Data = data.name,
+                        A = A,
+                        B = B,
+                        C = C,
+                        Score = score)
+                        
+  return(result)
+}
+
+```
+
+```{r constants}
+options(expressions = 500000)
+n.values <- c(520, 777, 1818)
+iterations <- 3
+digits <- 4
+```
+
+```{r load_data}
+train <- fread(input = train.set)
+test <- fread(input = test.set)
+```
+
+```{r clean_data}
+#check for "Bad Apple" : both seems good, saying that they do not have any bad apples
+str(train)
+str(test)
+
+#check fro missing value : both clean with missing values
+sum(is.na(train))
+sum(is.na(test))
+
+#check for erronous values out of [0,255] : so far the data is clean! no errornous val
+sum(train[,-1]<0 | train[,-1]>255)
+sum(test[,-1]<0 | test[,-1]>255)
+
+#check if the dependant variable for both train and test is well-match.
+train_uniq<- unique(train[,1])
+test_uniq <- unique(test[,1])
+
+train_uniq == test_uniq
+
+## side note: if we get any other clothes category outside of the train and test_uniq values, we cannot guarantee that the result will be as good as we get from them since it is not trained with it. 
+```
+
+```{r generate_samples}
+#Generating samples 
+sample_datasets = c()
+  for (i in n.values){
+    for (j in 1:iterations){
+      sample = sampling(train,i)
+      name = sprintf("%s_%d_%d", "dat", i, j)
+      assign(name, sample)
+      sample_datasets = append(sample_datasets,name)
+    }
+  }
+
+sample_datasets
+sample.dt <- data.table("Sample Size" = n.values,
+             "First Random Sample" = sample_datasets[c(1,4,7)],
+             "Second Random Sample" = sample_datasets[c(2,5,8)],
+             "Third Random Sample" = sample_datasets[c(3,6,9)])
+
+datatable(sample.dt)
+```
+
+## Introduction
+
+
+### Model 1:  
+
+```{r code_model1_development, eval = TRUE}
+# XGBoost Models
+library(caret)
+n.train = nrow(train)
+#create function for Classification Tree
+xgboost.model <- function (size, data.name){
+  set.seed(72)
+  
+  # Setting starting time
+  t1 <- Sys.time()
+  
+  # Training the model
+  xgb <- train(as.factor(label)~., 
+               data = get(data.name), 
+               method = "xgbTree",
+               trControl = trainControl("cv", number = 4))
+  
+  # Predicting
+  pred <- predict(object = xgb, newdata = test, type="raw")
+  
+  # Ending time
+  t2 <- Sys.time()
+  
+  # Scoring Criterion
+  running.time <- as.numeric(t2-t1)
+  A <- nrow(get(data.name))/n.train
+  B <- min(running.time/60 ,1)
+  C <- mean(pred != test$label)
+  score <- 0.25*A + 0.25 * B + 0.5 * C
+  
+  results <- data.frame(Model = "XGboost",
+                        `Sample Size` = size,
+                        Data = data.name,
+                        A = A,
+                        B = B,
+                        C = C,
+                        Score = score)
+                        
+  return(results)
+}
+# Deleting previous table(s)
+tab = NULL
+
+# Running the function for 3 different sample sizes and 3 iterations for each size
+for (j in 1:3){
+   for (i in 1:iterations){
+     size <- n.values[j]
+     data.name <- sprintf("%s_%d_%d","dat",size,i)
+     results <- xgboost.model(size = size, data.name = data.name)
+     tab <- as.data.table(rbind(tab,results))
+   }
+}
+
+# Displaying the results
+tab.xgb <- tab[,lapply(X=.SD, FUN = round.numerics,digits = digits)]
+tab.xgb
+tab.xgb.average <- tab.xgb[,.(A=mean(A),B=mean(B),C=mean(C),Score=mean(Score)),keyby = c("Model","Sample.Size")]
+tab.xgb.average <- tab.xgb.average[,lapply(X=.SD, FUN = round.numerics,digits = digits)]
+tab.xgb.average
+
+# Save data
+saveRDS(tab.xgb, "xgb")
+saveRDS(tab.xgb.average, "xgb_avg")
+```
+
+```{r load_model1}
+loadRDS("xgb")
+loadRDS("xgb_avg")
+```
+
+### Model 2:  
+
+
+```{r code_model2_development, eval = TRUE}
+# Support Vector Machines
+library(e1071)
+
+set.seed(72)
+svm.model <- function(size, data.name){
+
+  # Setting starting time
+  t1 <- Sys.time()
+  
+  # Training the model
+  svm <- svm(as.factor(label)~., data = get(data.name), type = 'C-classification')
+  
+  # Predicting
+  pred <- predict(object = svm, newdata = test, type = "class")
+  
+  # Ending time
+  t2 <- Sys.time()
+  running.time <- as.numeric(t2-t1, units = 'secs')
+  
+  # Scoring Criterion
+  results = scoring.model(model = 'SVM', size = size, running.time = running.time, data.name = data.name, pred = pred)
+  
+  return(results)                   
+}
+
+# Deleting Previous tab
+tab = NULL
+# Running the function for 3 different sample sizes and 3 iterations for each size
+for (j in 1:3){
+   for (i in 1:iterations){
+     size <- n.values[j]
+     data.name <- sprintf("%s_%d_%d","dat",size,i)
+     results <- svm.model(size = size, data.name = data.name)
+     tab <- as.data.table(rbind(tab,results))
+   }
+  }
+
+# Displaying the results
+tab.svm <- tab[,lapply(X=.SD, FUN = round.numerics,digits = digits)]
+tab.svm
+tab.svm.average <- tab.svm[,.(A=mean(A),B=mean(B),C=mean(C),Score=mean(Score)),keyby = c("Model","Sample.Size")]
+tab.svm.average <- tab.svm.average[,lapply(X=.SD, FUN = round.numerics,digits = digits)]
+tab.svm.average
+
+# Save Data
+saveRDS(tab.svm, "svm")
+saveRDS(tab.svm.average, "svm_avg") 
+```
+
+```{r load_model2}
+loadRDS('svm')
+loadRDS('svm_avg')
+```
+
+### Model 3:  
+
+
+```{r code_model3_development, eval = TRUE}
+########### LAPTOP WILL CRUSH! DO NOT RUN PLEASE!!!!!!
+# Loading in some pacakges
+library(gbm)
+library(caret)
+#create function for Classification Tree
+gbm.model <- function (size, data.name){
+  set.seed(72)
+  
+  # Setting starting time
+  t1 <- Sys.time()
+  
+  # Training the model
+  # Cross validation 5 folds
+  trControl_gbm = trainControl(method = "cv",
+                               number = 5)
+  
+  # Since the time is also another key factor of the score, we select 200 for # of trees.
+  tuneGrid_gbm = expand.grid(n.trees = 300, 
+                         interaction.depth = 1,
+                         shrinkage = 0.1,
+                         n.minobsinnode = 5)
+  
+  gbm = train(as.factor(label)~.,
+                  data = get(data.name),
+                  method = "gbm",
+                  trControl = trControl_gbm,
+                  tuneGrid = tuneGrid_gbm)
+  
+  # Predicting
+  pred <- predict(gbm, newdata = test, n.trees = 300, type = "raw")
+  t2 <- Sys.time()
+  running.time <- as.numeric(x = t2-t1, units = "secs")
+  
+  
+  ## Scoring Criterion
+  A <- nrow(get(data.name))/n.train
+  B <- min(running.time/60 ,1)
+  C <- mean(pred != test$label)
+  score <- 0.25*A + 0.25 * B + 0.5 * C
+  
+  results <- data.frame(Model = "GBM",
+                        `Sample Size` = size,
+                        Data = data.name,
+                        A = A,
+                        B = B,
+                        C = C,
+                        Score = score)
+  
+  return(results)
+  
+  # Deleting previous table(s)
+tab = NULL
+
+# Running the function for 3 different sample sizes and 3 iterations for each size
+for (j in 1:3){
+   for (i in 1:iterations){
+     size <- n.values[j]
+     data.name <- sprintf("%s_%d_%d","dat",size,i)
+     results <- gbm.model(size = size, data.name = data.name)
+     tab <- as.data.table(rbind(tab,results))
+   }
+  }
+
+# Displaying the results
+tab.gbm <- tab[,lapply(X=.SD, FUN = round.numerics,digits = digits)]
+tab.gbm
+tab.gbm.average <- tab.gbm[,.(A=mean(A),B=mean(B),C=mean(C),Score=mean(Score)),keyby = c("Model","Sample.Size")]
+tab.gbm.average <- tab.gbm.average[,lapply(X=.SD, FUN = round.numerics,digits = digits)]
+tab.gbm.average
+}
+
+# Save the data 
+saveRDS(tab.gbm.average, "gbm_avg")
+saveRDS(tab.gbm, "gbm")
+```
+
+```{r load_model3}
+# Load the data
+loadRDS("gbm")
+loadRDS("gbm_avg")
+```
+
+### Model 4
+
+
+```{r code_model4_development, eval = FALSE}
+# Ensemble 
+
+
+```
+
+```{r load_model4}
+
+```
+
+### Model 5
+
+
+```{r code_model5_development, eval = TRUE}
+
+```
+
+```{r load_model5}
+
+```
+
+### Model 6
+
+
+```{r code_model6_development, eval = TRUE}
+
+```
+
+```{r load_model6}
+
+```
+
+### Model 7
+
+
+```{r code_model7_development, eval = TRUE}
+
+```
+
+```{r load_model7}
+
+```
+
+### Model 8
+
+
+```{r code_model8_development, eval = TRUE}
+
+```
+
+```{r load_model8}
+
+```
+
+### Model 9
+
+
+```{r code_model9_development, eval = TRUE}
+
+```
+
+```{r load_model9}
+
+```
+
+### Model 10
+
+
+```{r code_model10_development, eval = TRUE}
+
+```
+
+```{r load_model10}
+
+```
+
+## Scoreboard
+
+```{r scoreboard}
+
+```
+
+## Discussion
+
+
+## References
+
+
